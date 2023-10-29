@@ -16,7 +16,6 @@ import torch.optim as optim
 from torch.utils.tensorboard import SummaryWriter
 from scipy.spatial.distance import braycurtis
 from torch_geometric.utils import sort_edge_index
-from sklearn.decomposition import PCA
 from lion_optim import *
 from models import *
 from utils import *

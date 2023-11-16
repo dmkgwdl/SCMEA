@@ -215,16 +215,12 @@ class MultiViewEncoder(nn.Module):
         if self.args.w_triple_gat > 0:
             self.rel_emb = nn.Parameter(
                 nn.init.sparse_(torch.empty(self.REL_NUM*2, self.rel_input_dim), sparsity=0.15)).to(device)
-            if self.args.w_lg:
-                self.l_gat = Line_GAT(self.rel_output_dim)
-            else:
-                print("init with random rel_emb")
-            
+
             self.highway1 = FinalHighway(self.ent_dim).to(device)
             self.highway2 = FinalHighway(self.ent_dim).to(device)
             # self.highway3 = FinalHighway(self.ent_dim).to(device)
-            self.ea1 = EALayer(self.REL_NUM, 300, self.rel_output_dim, mode="add", use_ra=self.args.w_ra).to(device)
-            self.ea2 = EALayer(self.REL_NUM, 300, self.rel_output_dim, mode="add", use_ra=self.args.w_ra).to(device)
+            self.ea1 = EALayer(self.REL_NUM, 300, self.rel_output_dim, mode="add", use_ra=False).to(device)
+            self.ea2 = EALayer(self.REL_NUM, 300, self.rel_output_dim, mode="add", use_ra=False).to(device)
             # self.ea3 = EALayer(self.REL_NUM, 300, self.rel_output_dim, mode="add", use_ra=self.args.w_ra).to(device)
 
         # Relation Embedding(for entity)
@@ -259,16 +255,7 @@ class MultiViewEncoder(nn.Module):
             gph_emb = None
 
         if self.args.w_triple_gat:
-            if self.args.w_lg:
-                path_graph_index_pos = r_path_adj.coalesce().indices()
-                path_graph_val_pos = r_path_adj.coalesce().values()
-                path_graph_index_rev = path_graph_index_pos[[1, 0]]
-                path_graph_val_rev = path_graph_val_pos
-                rel_in_emb = self.l_gat(self.rel_emb[:self.REL_NUM], path_graph_index_pos, path_graph_val_pos)
-                rel_out_emb = self.l_gat(self.rel_emb[self.REL_NUM:], path_graph_index_rev, path_graph_val_rev)
-                rel_emb = torch.cat([rel_in_emb, rel_out_emb], dim=0)
-            else:
-                rel_emb = self.rel_emb
+            rel_emb = self.rel_emb
 
         if self.args.w_rel:
             rel_in_f = self.rel_shared_fc(rel_features_in)
@@ -286,6 +273,7 @@ class MultiViewEncoder(nn.Module):
         if self.args.ent_name > 0 and self.args.word_embedding == "wc":
             name_emb = self.wc_fc(name_emb)
         joint_emb = self.fusion([name_emb, gph_emb, ent_rel_emb, att_emb])
+        
         if self.args.w_triple_gat:
             joint_emb = self.tri_fc(joint_emb)
             res_att = None
@@ -343,12 +331,10 @@ class T_wise_graphattention(nn.Module):
         # self.linear = nn.Linear(e_hidden * 3 + r_hidden, 300)
         self.ww = nn.Linear(e_hidden * 3, 1, bias=False)
         self.linear = nn.Linear(e_hidden * 4, 300)
-        self.ra_layer = RALayer(e_hidden=e_hidden, r_hidden=r_hidden)
-
+        
     # x: entity_emb
     # edge_index_all: in, out
     def forward(self, x, edge_index_all, rel_all, rel_emb):
-        rel_emb = self.ra_layer(rel_emb)
         outputs = []
         edge_index_i, edge_index_j = edge_index_all
         outputs.append(x)
@@ -366,23 +352,6 @@ class T_wise_graphattention(nn.Module):
         return out_emb
 
 
-class Line_GAT(nn.Module):
-    def __init__(self, hidden):
-        super(Line_GAT, self).__init__()
-        self.a_i = nn.Linear(hidden, 1, bias=False)
-        self.a_j = nn.Linear(hidden, 1, bias=False)
-
-    def forward(self, x, edge_index, weight):
-        edge_index_j, edge_index_i = edge_index
-        e_i = self.a_i(x).squeeze()[edge_index_i]
-        e_j = self.a_j(x).squeeze()[edge_index_j]
-        e = e_i + e_j
-        alpha = softmax(F.leaky_relu(e).float(), edge_index_j)
-        attention = (alpha + weight) / 2
-        x = F.relu(spmm(edge_index[[1, 0]], attention, x.size(0), x.size(0), x))
-        return x
-
-
 class FinalHighway(nn.Module):
     def __init__(self, x_hidden):
         super(FinalHighway, self).__init__()
@@ -392,51 +361,6 @@ class FinalHighway(nn.Module):
         gate = torch.sigmoid(self.lin(x1))
         x = torch.mul(gate, x2) + torch.mul(1 - gate, x1)
         return x
-
-
-class RAGAT(nn.Module):
-    def __init__(self, e_hidden, r_hidden):
-        super(RAGAT, self).__init__()
-        self.ww = nn.Linear(e_hidden * 2 + r_hidden, 1, bias=False)
-        self.rel_trans = nn.Linear(r_hidden, r_hidden)
-        self.re_layer = RALayer(e_hidden=e_hidden, r_hidden=r_hidden)
-        self.out = nn.Linear(e_hidden * 2 + r_hidden, e_hidden, bias=False)
-
-    def forward(self, x, edge_index, edge_type, rel_emb):
-        rel_emb = self.re_layer(x, edge_index, edge_type, rel_emb)
-        edge_index_i, edge_index_j = edge_index
-        e_head = x[edge_index_i]
-        e_tail = x[edge_index_j]
-        e_rel = rel_emb[edge_type]
-        tri = torch.cat([e_head, e_rel, e_tail], dim=1)
-        att = self.ww(tri).squeeze()
-        att = softmax(att, edge_index_i)
-        x_e = scatter(tri * torch.unsqueeze(att, dim=-1), edge_index_i, dim=0, reduce='sum')
-        x_e = self.out(F.relu(x_e))
-        return x_e, rel_emb
-
-
-class RALayer(nn.Module):
-    def __init__(self, e_hidden, r_hidden):
-        super(RALayer, self).__init__()
-        # self.r2r = nn.Linear(r_hidden, r_hidden, bias=False)
-        self.e2r = nn.Linear(e_hidden, r_hidden, bias=False)
-        self.gamma = 0.3
-        print("gamma = ", self.gamma)
-
-    def forward(self, x, edge_index, edge_type, rel_emb, res_att):
-        edge_index_i = edge_index[0]
-        edge_index_j = edge_index[1]
-        x = self.e2r(x)
-        e_head = x[edge_index_i]
-        e_rel = rel_emb[edge_type]
-        # h_t = e_head + e_tail
-        dp_att = torch.sum(e_head * e_rel, dim=-1)
-        attention_weights = torch.softmax(dp_att, dim=-1)
-        if res_att is not None:
-            attention_weights = attention_weights * (1 - self.gamma) + res_att * self.gamma
-        x_r = scatter(e_rel * torch.unsqueeze(attention_weights, dim=-1), edge_type, dim=0, reduce='sum')
-        return F.relu(x_r), attention_weights
 
 
 class EALayer(nn.Module):

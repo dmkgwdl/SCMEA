@@ -160,8 +160,8 @@ class SCMEA:
         parser.add_argument("--w_in_att", type=int, default=0, help="interactive_learning with att features")
         parser.add_argument("--expend_t", type=float, default=0.3, help="expend entities before training")
         parser.add_argument("--pro_lte", type=float, default=0.3, help="The proportion of long tail entities")
-        parser.add_argument("--w_lg", type=int, default=1, help="with lg features")
-        parser.add_argument("--w_ra", type=int, default=1, help="with ra?")
+        parser.add_argument("--w_lg", type=int, default=0, help="with lg features")
+        parser.add_argument("--w_ra", type=int, default=0, help="with ra?")
         parser.add_argument("--inner_view_num", type=int, default=4, help="the number of inner view")
         parser.add_argument("--loss", type=str, default="nca", help="[nca|hinge]")
         parser.add_argument("--gamma", type=float, default=3, help="expend entities before training")
@@ -197,7 +197,6 @@ class SCMEA:
         self.right_ents = get_ids(e2)
         self.ENT_NUM = len(self.ent2id_dict)
         self.REL_NUM = len(self.rel_ht_dict)
-        self.nhop_path = get_nhop_co_matrix(self.triples, self.REL_NUM, self.ENT_NUM, norm=True)
         np.random.shuffle(self.ills)
         self.train_ill = np.array(self.ills[:int(len(self.ills) // 1 * self.args.rate)], dtype=np.int32)
         self.test_ill_ = self.ills[int(len(self.ills) // 1 * self.args.rate):]
@@ -279,6 +278,7 @@ class SCMEA:
                                                   name_size=self.ent_name_dim,
                                                   rel_size=rel_size, attr_size=attr_size,
                                                   use_project_head=False).to(self.device)
+        
         # self.parallel_co_attention = Parallel_Co_Attention(hidden_dim=300)
         self.params = [
             {"params":
